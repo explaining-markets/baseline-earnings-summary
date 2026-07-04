@@ -1,6 +1,6 @@
 [project]
 name = "em-baseline-earnings-summary"
-version = "0.1.0"
+version = "0.1.0b1"
 description = "Summary baselines (gpt-5-nano, Gemini Flash-Lite) for the Explaining Markets competition, deployed on Modal."
 readme = "README.md"
 requires-python = ">=3.11"
