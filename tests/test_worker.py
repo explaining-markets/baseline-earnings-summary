@@ -10,11 +10,11 @@ import httpx
 import litellm
 import pytest
 import respx
-from tests.conftest import API_BASE_URL, INFORMATION_URL
 
 from em_baseline import predictor
 from em_baseline.config import Config
 from em_baseline.worker import handle_event
+from tests.conftest import API_BASE_URL, INFORMATION_URL
 
 PREDICTIONS_URL = f"{API_BASE_URL}/predictions"
 

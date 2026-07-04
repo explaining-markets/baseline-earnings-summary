@@ -17,12 +17,12 @@ import os
 import pytest
 import respx
 from dotenv import load_dotenv
-from tests.conftest import API_BASE_URL, INFORMATION_URL, TEST_SECRET
 
 from em_baseline.bundle import format_facts
 from em_baseline.config import LM_MODELS, PROVIDER_KEY_VARS, BaselineModel, Config
 from em_baseline.predictor import predict_from_facts
 from em_baseline.worker import handle_event
+from tests.conftest import API_BASE_URL, INFORMATION_URL, TEST_SECRET
 
 pytestmark = pytest.mark.live
 

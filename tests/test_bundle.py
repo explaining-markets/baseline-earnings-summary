@@ -5,9 +5,9 @@ from __future__ import annotations
 import httpx
 import pytest
 import respx
-from tests.conftest import INFORMATION_URL
 
 from em_baseline.bundle import extract_facts, fetch_bundle, format_facts
+from tests.conftest import INFORMATION_URL
 
 
 def test_extract_facts_happy_path(sample_bundle: dict, adea_facts: list[str]) -> None:

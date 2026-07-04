@@ -5,10 +5,10 @@ from __future__ import annotations
 
 import pytest
 from fastapi.testclient import TestClient
-from tests.conftest import canonical_body, sign_headers
 
 from em_baseline.config import Config
 from em_baseline.webhook_app import create_app
+from tests.conftest import canonical_body, sign_headers
 
 
 @pytest.fixture
