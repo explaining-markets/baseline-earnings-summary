@@ -1,0 +1,26 @@
+# Secrets — never commit
+.env
+
+# Local-only dev/maintenance scripts
+scripts/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual envs / tooling (uv.lock is committed on purpose — this is a deployable app)
+.venv/
+venv/
+.uv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
