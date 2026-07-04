@@ -1,5 +1,5 @@
 {
-  "_comment": "Frozen webhook-signing test vectors, copied verbatim from the competition's API repo (docs/test_vectors.json). The server-side signer AND the reference verifier both pin to these values, so you can confirm your verifier is wired up correctly without waiting for a real broadcast. Do not edit.",
+  "_comment": "Frozen webhook-signing test vectors, copied verbatim from the competition's canonical test vectors. The server-side signer AND the reference verifier both pin to these values, so you can confirm your verifier is wired up correctly without waiting for a real broadcast. Do not edit.",
   "vectors": [
     {
       "name": "minimal payload, single signature",
