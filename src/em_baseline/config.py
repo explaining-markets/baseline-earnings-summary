@@ -17,7 +17,7 @@ Required:
   GEMINI_API_KEY               when BASELINE_MODEL=gemini
 
 Optional:
-  EM_API_BASE_URL              API base URL (default: beta)
+  EM_API_BASE_URL              API base URL (default: prod)
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ import os
 from dataclasses import dataclass
 from enum import StrEnum
 
-DEFAULT_API_BASE_URL = "https://api-beta.explainingmarkets.ai/v1"
+DEFAULT_API_BASE_URL = "https://api.explainingmarkets.ai/v1"
 
 
 class BaselineModel(StrEnum):

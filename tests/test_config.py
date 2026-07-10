@@ -31,7 +31,7 @@ def test_gpt5nano_selects_openai_model_and_nano_credentials(full_env: pytest.Mon
     assert cfg.lm_model == "openai/gpt-5-nano-2025-08-07"
     assert cfg.api_key == "comp_sk_nano"
     assert cfg.webhook_secret == "whsec_nano"
-    assert cfg.api_base_url == "https://api-beta.explainingmarkets.ai/v1"
+    assert cfg.api_base_url == "https://api.explainingmarkets.ai/v1"
 
 
 def test_gemini_selects_gemini_model_and_gemini_credentials(full_env: pytest.MonkeyPatch) -> None:
