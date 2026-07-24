@@ -23,8 +23,25 @@ logger = logging.getLogger(__name__)
 
 
 def is_test(event: dict) -> bool:
-    """True for the portal's synthetic 'Test Webhook' deliveries — skip these."""
+    """True for the portal's synthetic 'Test Webhook' deliveries.
+
+    Submit a neutral prediction for these (see ``neutral_predictions``), then
+    ACK — that's how the portal test verifies the full receive → submit loop.
+    Test predictions are accepted by the API but never scored.
+    """
     return event.get("event_type") == "TEST"
+
+
+def neutral_predictions(event: dict) -> list[dict]:
+    """A neutral 0.5 prediction per focal asset.
+
+    Used for TEST events: exercises the credentials and submit path without
+    calling the model.
+    """
+    return [
+        {"identifier_value": asset["identifier_value"], "predicted_percentile": 0.5}
+        for asset in event.get("focal_assets", [])
+    ]
 
 
 def first_focal_asset(event: dict) -> str:

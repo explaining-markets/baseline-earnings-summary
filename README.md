@@ -51,7 +51,10 @@ Prediction behavior (`src/em_baseline/`):
   worker call is visible in the Modal dashboard.
 - Only the **first focal asset** is predicted on (the competition currently
   disseminates exactly one per event).
-- The portal's synthetic `TEST` events are ACKed but never predicted on.
+- The portal's synthetic `TEST` events get a neutral 0.5 prediction through
+  the normal submit path (accepted by the API, never scored) so the portal
+  test verifies the full receive → submit loop; the LLM is never called for
+  them, and a submit failure still ACKs 200.
 
 ## Setup
 
@@ -82,8 +85,9 @@ BASELINE_MODEL=gemini   uv run modal deploy modal_app.py
 Each deploy prints a persistent public URL like
 `https://<workspace>--em-baseline-gpt5nano.modal.run`. Paste each URL, as-is,
 into the **matching** submission's webhook field in the portal, then use the
-portal's *Send test event* button — the handler ACKs it with 200 without
-submitting a prediction.
+portal's *Send test event* button — the handler submits a neutral 0.5
+prediction back (never scored) and ACKs 200, verifying the full
+receive → submit loop.
 
 For local iteration use `modal serve` (hot-reloads on save):
 

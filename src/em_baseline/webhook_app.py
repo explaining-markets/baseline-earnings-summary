@@ -21,8 +21,9 @@ from typing import Any, Protocol
 
 from fastapi import FastAPI, Request, Response
 
+from em_baseline.client import submit_predictions
 from em_baseline.config import Config
-from em_baseline.event_utils import is_test
+from em_baseline.event_utils import is_test, neutral_predictions
 from em_baseline.webhook_verification import WebhookVerificationError, verify_webhook
 
 logger = logging.getLogger(__name__)
@@ -83,10 +84,26 @@ def create_app(
         if webhook_id and webhook_id in seen_webhooks:
             return Response(status_code=200)
 
-        # The portal's "Test Webhook" button sends a synthetic TEST event — ACK
-        # it so the smoke test passes, but don't predict or submit.
+        # The portal's "Test Webhook" button sends a synthetic TEST event.
+        # Submit a neutral prediction for it (accepted by the API, never
+        # scored) so the portal test verifies the full receive → submit loop,
+        # then ACK. A submit failure must not fail the ACK — the delivery
+        # itself succeeded, and the portal will report the missing prediction
+        # so a broken API key or submit path is visible.
         if is_test(event):
-            logger.info("TEST event %s acknowledged", event.get("event_id"))
+            try:
+                submit_predictions(
+                    event_id=event["event_id"],
+                    predictions=neutral_predictions(event),
+                    config=config,
+                )
+                logger.info("TEST event %s: neutral prediction submitted", event.get("event_id"))
+            except Exception:
+                logger.warning(
+                    "TEST event %s: prediction failed to submit",
+                    event.get("event_id"),
+                    exc_info=True,
+                )
             if webhook_id:
                 seen_webhooks[webhook_id] = True
             return Response(status_code=200)
