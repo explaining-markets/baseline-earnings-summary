@@ -2,10 +2,13 @@
 
 This runs in the spawned Modal worker function, *after* the webhook has been
 ACKed (the handler ACKs fast because the competition's delivery POST has a
-10-second timeout, while a reasoning-model call can take longer). The per-event
-prediction deadline starts at the ACK, so the worker has the full window.
+20-second timeout, while a reasoning-model call can take longer). The
+per-event prediction deadline (5 minutes) starts at the ACK, so the worker
+has the full window.
 
 Failure policy:
+  - TEST event (portal webhook test) → submit a neutral 0.5 prediction, skip
+    the bundle fetch and the LLM entirely.
   - No usable facts in the bundle → submit the neutral 0.5 baseline.
   - LLM answered but unparseable → submit the neutral 0.5 baseline.
   - Transient failures (bundle fetch, LLM provider, submission API) are
@@ -25,7 +28,7 @@ import httpx
 from em_baseline.bundle import extract_facts, fetch_bundle, format_facts
 from em_baseline.client import TransientSubmissionError, submit_predictions
 from em_baseline.config import Config
-from em_baseline.event_utils import first_focal_asset, log_deadline
+from em_baseline.event_utils import first_focal_asset, is_test, log_deadline, neutral_predictions
 from em_baseline.predictor import neutral_outcome, predict_from_facts
 
 logger = logging.getLogger(__name__)
@@ -41,6 +44,23 @@ def handle_event(event: dict[str, Any], config: Config | None = None) -> dict[st
     """Predict and submit for one event. Returns a loggable summary dict."""
     cfg = config or Config.from_env()
     event_id = event["event_id"]
+
+    # The portal's "Test Webhook" button sends a synthetic TEST event. It takes
+    # the same post-ACK path as a real one but skips the bundle fetch and the
+    # LLM — a neutral prediction exercises the credentials and submit path,
+    # which is exactly what the portal's round-trip test verifies.
+    if is_test(event):
+        response = _retry_transient(
+            lambda: submit_predictions(
+                event_id=event_id, predictions=neutral_predictions(event), config=cfg
+            ),
+            attempts=SUBMIT_ATTEMPTS,
+            transient=(httpx.TransportError, TransientSubmissionError),
+            what=f"TEST prediction submission for {event_id}",
+        )
+        logger.info("[%s] TEST event: neutral prediction submitted", event_id)
+        return {"event_id": event_id, "test": True, "submission_status": response.get("status")}
+
     ticker = first_focal_asset(event)
     log_deadline(event)
 

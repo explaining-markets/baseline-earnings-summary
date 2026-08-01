@@ -31,11 +31,12 @@ competition ──POST──▶ web (ASGI)                     process_event (wo
 ```
 
 The webhook handler ACKs immediately and does the slow work in a spawned
-worker because the competition's delivery POST times out after **10 seconds**,
-while a gpt-5-nano reasoning call regularly takes longer. The per-event
-prediction deadline (5 minutes) starts at the ACK, so the worker has the full
-window. Delivery retries are deduped on the `Webhook-Id` header via a
-persistent `modal.Dict`.
+worker because the competition's delivery POST times out after **20 seconds**,
+while a reasoning-model call regularly takes longer. The per-event prediction
+deadline (5 minutes) starts at the ACK, so the worker has the full window.
+Delivery retries are deduped on the `Webhook-Id` header via an atomic claim in
+a persistent `modal.Dict` (`in_flight` → `done` on submit success, dropped on
+failure so a redelivery can retry).
 
 Prediction behavior (`src/em_baseline/`):
 

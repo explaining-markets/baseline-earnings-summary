@@ -1,13 +1,20 @@
 """FastAPI app factory for the competition webhook receiver.
 
-The handler is deliberately fast: verify the signature, dedupe on the
-``Webhook-Id`` header, hand the event to an async processor (a spawned Modal
-function in deployment), and ACK 200 — all in well under the competition
-deliverer's 10-second POST timeout. The per-event prediction deadline starts
-at the ACK, so the slow LLM work happens afterwards with the full window.
+The handler is deliberately fast: verify the signature, atomically claim the
+``Webhook-Id``, spawn the worker, and ACK 200 — all in well under the
+competition deliverer's 20-second POST timeout. The per-event prediction
+deadline (5 minutes) starts at the ACK, so all slow work — the LLM, and even
+the portal's synthetic TEST events — happens in the spawned worker afterwards.
+
+The claim, spawn, and release hooks are injected as *async* callables: in
+deployment they are Modal RPCs, and Modal's blocking interfaces run their own
+event loop under the hood — calling them from inside an ``async def`` route
+stalls the loop, the exact latency ACK-first is meant to avoid. The ``.aio``
+variants are the async-native ones; the request path must use those, and only
+those.
 
 A factory (rather than a module-level app) so tests can inject an in-memory
-dedupe store and a recording processor.
+claim and a recording spawner.
 
 Note: no ``from __future__ import annotations`` here — the route handlers are
 defined inside ``create_app()``, and FastAPI must see the real ``Request`` /
@@ -16,44 +23,38 @@ nested scope) to inject them correctly.
 """
 
 import logging
-from collections.abc import Callable
-from typing import Any, Protocol
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from fastapi import FastAPI, Request, Response
 
-from em_baseline.client import submit_predictions
 from em_baseline.config import Config
-from em_baseline.event_utils import is_test, neutral_predictions
 from em_baseline.webhook_verification import WebhookVerificationError, verify_webhook
 
 logger = logging.getLogger(__name__)
 
 
-class SeenStore(Protocol):
-    """The slice of the mapping interface the dedupe store needs — satisfied
-    structurally by both ``modal.Dict`` and a plain ``dict``."""
-
-    def __contains__(self, key: str) -> bool: ...
-
-    def __setitem__(self, key: str, value: bool) -> None: ...
-
-
 def create_app(
     *,
     service_name: str,
-    seen_webhooks: SeenStore,
-    process_event: Callable[[dict[str, Any]], object],
+    claim_webhook: Callable[[str | None], Awaitable[bool]],
+    spawn_worker: Callable[[dict[str, Any], str | None], Awaitable[object]],
+    release_webhook: Callable[[str | None], Awaitable[None]],
     config_loader: Callable[[], Config] = Config.from_env,
 ) -> FastAPI:
     """Build the webhook receiver.
 
     Args:
         service_name: reported by the health check (e.g. ``em-baseline-gemini``).
-        seen_webhooks: idempotency store keyed on ``Webhook-Id`` — a
-            ``modal.Dict`` in deployment, a plain dict in tests.
-        process_event: called with the verified event payload; must return
-            quickly (in deployment it spawns the worker function). If it
-            raises, the request 500s and the competition redelivers.
+        claim_webhook: atomically reserve a ``Webhook-Id``; False means it is
+            already in flight or done and the delivery is skipped. Must treat
+            a missing id as claimable (return True).
+        spawn_worker: hand the verified event (plus its claim id, so the worker
+            can release it when done) to the async processor. If it raises, the
+            request 500s and the competition redelivers.
+        release_webhook: drop a claim taken by ``claim_webhook`` — used only
+            when the spawn itself fails, so the redelivery isn't skipped as a
+            duplicate of a job that never started.
         config_loader: overridable for tests.
     """
     api = FastAPI(title=service_name)
@@ -79,42 +80,20 @@ def create_app(
             return Response(content=str(exc), status_code=401)
 
         # Idempotency: the Webhook-Id header (== event["id"]) is stable across
-        # retries. Skip anything we've already handled.
+        # retries. The claim is atomic, so two containers handling the same
+        # redelivery at the same moment can't both spawn.
         webhook_id = event.get("id")
-        if webhook_id and webhook_id in seen_webhooks:
+        if not await claim_webhook(webhook_id):
             return Response(status_code=200)
 
-        # The portal's "Test Webhook" button sends a synthetic TEST event.
-        # Submit a neutral prediction for it (accepted by the API, never
-        # scored) so the portal test verifies the full receive → submit loop,
-        # then ACK. A submit failure must not fail the ACK — the delivery
-        # itself succeeded, and the portal will report the missing prediction
-        # so a broken API key or submit path is visible.
-        if is_test(event):
-            try:
-                submit_predictions(
-                    event_id=event["event_id"],
-                    predictions=neutral_predictions(event),
-                    config=config,
-                )
-                logger.info("TEST event %s: neutral prediction submitted", event.get("event_id"))
-            except Exception:
-                logger.warning(
-                    "TEST event %s: prediction failed to submit",
-                    event.get("event_id"),
-                    exc_info=True,
-                )
-            if webhook_id:
-                seen_webhooks[webhook_id] = True
-            return Response(status_code=200)
-
-        # Hand off the slow work; if the spawn itself fails we 500 so the
-        # competition redelivers.
-        process_event(event)
+        # Everything slow — including the TEST events' neutral submit —
+        # happens in the worker, after this 200 goes out.
+        try:
+            await spawn_worker(event, webhook_id)
+        except Exception:
+            await release_webhook(webhook_id)
+            raise  # → 500; the competition redelivers
         logger.info("event %s accepted and dispatched", event.get("event_id"))
-
-        if webhook_id:
-            seen_webhooks[webhook_id] = True
         return Response(status_code=200)
 
     return api

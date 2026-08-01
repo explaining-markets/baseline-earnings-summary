@@ -145,6 +145,52 @@ def test_persistent_llm_outage_submits_nothing(
 
 
 @respx.mock
+def test_test_event_submits_neutral_without_fetch_or_llm(
+    sample_event: dict, test_config: Config
+) -> None:
+    """The portal test verifies the full receive → submit loop: a TEST event
+    gets a neutral 0.5 prediction via the normal submit path, and neither the
+    disclosure URL nor the LLM is touched (no respx route for either — an
+    accidental call would error)."""
+    sample_event["event_type"] = "TEST"
+    sample_event["event_id"] = "test_abc123"
+    sample_event["information_url"] = "https://example.invalid/test"
+    sample_event["focal_assets"] = [{"identifier_type": "TICKER", "identifier_value": "TEST"}]
+    submit_route = respx.post(PREDICTIONS_URL).respond(status_code=201, json=ACCEPTED)
+
+    summary = handle_event(sample_event, config=test_config)
+
+    body = json.loads(submit_route.calls.last.request.content)
+    assert body == {
+        "event_id": "test_abc123",
+        "predictions": [{"identifier_value": "TEST", "predicted_percentile": 0.5}],
+    }
+    assert summary == {
+        "event_id": "test_abc123",
+        "test": True,
+        "submission_status": "accepted_first",
+    }
+
+
+@respx.mock
+def test_test_event_submit_failure_propagates_after_retries(
+    monkeypatch: pytest.MonkeyPatch, sample_event: dict, test_config: Config
+) -> None:
+    """Post-ACK, a broken submit path may fail loudly — the exception reaches
+    the Modal dashboard and the dedupe claim is dropped by the caller."""
+    import em_baseline.worker as worker_mod
+
+    monkeypatch.setattr(worker_mod, "RETRY_BACKOFF_SECONDS", 0.0)
+    sample_event["event_type"] = "TEST"
+    sample_event["event_id"] = "test_abc123"
+    submit_route = respx.post(PREDICTIONS_URL).mock(side_effect=httpx.ConnectError("api down"))
+
+    with pytest.raises(httpx.ConnectError):
+        handle_event(sample_event, config=test_config)
+    assert submit_route.call_count == 3
+
+
+@respx.mock
 def test_bundle_fetch_retries_transient_then_succeeds(
     monkeypatch: pytest.MonkeyPatch,
     sample_event: dict,

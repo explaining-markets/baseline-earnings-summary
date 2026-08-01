@@ -1,9 +1,9 @@
 """Modal deployment for the Explaining Markets summary baselines.
 
-One codebase, two deployments — ``BASELINE_MODEL`` (read from your shell at
-deploy time and baked into the image) selects the model and the credential
-pair, and parameterizes every Modal resource name so the deployments never
-collide:
+One codebase, one deployment per model — ``BASELINE_MODEL`` (read from your
+shell at deploy time and baked into the image) selects the model and the
+credential pair, and parameterizes every Modal resource name so the
+deployments never collide:
 
     BASELINE_MODEL=gpt5nano uv run modal deploy modal_app.py
     BASELINE_MODEL=gemini   uv run modal deploy modal_app.py
@@ -14,13 +14,14 @@ webhook URL to paste into the portal for the matching submission, as-is.
 
 Architecture (see README for the why):
 
-    web (ASGI)          verify signature → dedupe → spawn worker → ACK 200
+    web (ASGI)          verify signature → claim Webhook-Id → spawn worker → ACK 200
     process_event       fetch DisclosureBundle → DSPy prediction → submit
 
 The webhook handler ACKs fast because the competition's delivery POST times
-out after 10 seconds, while a gpt-5-nano reasoning call can take longer. The
-per-event prediction deadline starts at the ACK, so the spawned worker has the
-full window. Credentials come from the local ``.env`` at deploy time.
+out after 20 seconds, while a reasoning-model call can take far longer. The
+per-event prediction deadline (5 minutes) starts at the ACK, so the spawned
+worker has the full window. Credentials come from the local ``.env`` at
+deploy time.
 """
 
 import modal
@@ -40,19 +41,61 @@ image = (
     .add_local_python_source("em_baseline")
 )
 
-# Distributed key-value store for idempotency. Persists across redeploys, so a
-# retried webhook is never processed twice. Keyed on the Webhook-Id header.
+# Distributed key-value store for idempotency, keyed on the Webhook-Id header.
+# Persists across redeploys, so a retried webhook is never processed twice.
+# Three states:
+#
+#   "in_flight"   a worker is running right now — skip duplicates
+#   "done"        the prediction was submitted — skip forever
+#   absent        never seen, or the last attempt failed — (re)run it
+#
+# Marking an event done up front would be the bug: a failed prediction would
+# look handled and the redelivery would be skipped.
 seen_webhooks = modal.Dict.from_name(f"{APP_NAME}-webhook-dedupe", create_if_missing=True)
 
 secrets = [modal.Secret.from_dotenv(__file__)]
 
 
+async def _claim(webhook_id: str | None) -> bool:
+    """Atomically reserve this Webhook-Id; False = already in flight or done.
+
+    Modal's blocking interfaces run their own event loop under the hood, so
+    calling them from inside an ``async def`` route stalls the loop — the
+    request path must use the ``.aio`` variants, and only those.
+    """
+    if not webhook_id:
+        return True
+    return await seen_webhooks.put.aio(webhook_id, "in_flight", skip_if_exists=True)
+
+
+async def _drop_claim(webhook_id: str | None) -> None:
+    """Drop a claim whose spawn failed, so the redelivery isn't deduped away."""
+    if webhook_id:
+        await seen_webhooks.pop.aio(webhook_id, None)
+
+
+def _release(webhook_id: str | None, *, submitted: bool) -> None:
+    """Mark the claim done on success, or drop it so a redelivery can retry.
+
+    Runs inside the worker container (sync context), so the blocking interface
+    is fine here.
+    """
+    if not webhook_id:
+        return
+    if submitted:
+        seen_webhooks[webhook_id] = "done"
+    else:
+        seen_webhooks.pop(webhook_id, None)
+
+
 @app.function(image=image, secrets=secrets, timeout=280)
-def process_event(event: dict) -> dict:
-    """Async worker: fetch facts, run the LLM, submit the prediction.
+def process_event(event: dict, webhook_id: str | None = None) -> dict:
+    """Worker: fetch facts, run the LLM, submit the prediction.
 
     Spawned by the webhook handler after the ACK; a failure here is visible in
-    the Modal dashboard but never blocks or fails the webhook delivery.
+    the Modal dashboard but never blocks or fails the webhook delivery. The
+    dedupe claim is released on the way out — kept as "done" only when the
+    submit went through, dropped otherwise so a redelivery can retry.
     """
     import logging
 
@@ -60,7 +103,17 @@ def process_event(event: dict) -> dict:
 
     from em_baseline.worker import handle_event
 
-    return handle_event(event)
+    submitted = False
+    try:
+        summary = handle_event(event)
+        submitted = True
+        return summary
+    finally:
+        _release(webhook_id, submitted=submitted)
+
+
+async def _spawn_worker(event: dict, webhook_id: str | None) -> object:
+    return await process_event.spawn.aio(event, webhook_id)
 
 
 @app.function(image=image, secrets=secrets)
@@ -74,6 +127,7 @@ def web():
 
     return create_app(
         service_name=APP_NAME,
-        seen_webhooks=seen_webhooks,
-        process_event=lambda event: process_event.spawn(event),
+        claim_webhook=_claim,
+        spawn_worker=_spawn_worker,
+        release_webhook=_drop_claim,
     )
