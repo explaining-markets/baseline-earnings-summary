@@ -476,7 +476,7 @@ wheels = [
 
 [[package]]
 name = "em-baseline-earnings-summary"
-version = "0.1.0b1"
+version = "0.2.0b1"
 source = { editable = "." }
 dependencies = [
     { name = "dspy" },
