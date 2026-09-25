@@ -85,7 +85,7 @@ def handle_event(event: dict[str, Any], config: Config | None = None) -> dict[st
         logger.warning("[%s] no usable facts in bundle — submitting neutral 0.5", event_id)
         outcome = neutral_outcome("no_facts")
     else:
-        outcome = predict_from_facts(format_facts(facts), preview, lm_model=cfg.lm_model)
+        outcome = predict_from_facts(format_facts(facts), preview, spec=cfg.spec)
 
     response = _retry_transient(
         lambda: submit_predictions(
@@ -101,7 +101,7 @@ def handle_event(event: dict[str, Any], config: Config | None = None) -> dict[st
     summary = {
         "event_id": event_id,
         "ticker": ticker,
-        "model": cfg.lm_model,
+        "model": cfg.spec.lm_model,
         "n_facts": len(facts) if facts else 0,
         "has_preview": preview is not None,
         "preview_chars": len(preview or ""),

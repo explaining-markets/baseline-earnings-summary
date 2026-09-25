@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from em_baseline.config import BaselineModel, Config
+from em_baseline.config import MODELS, BaselineModel, Config
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
 
@@ -123,8 +123,8 @@ def nvda_event() -> dict:
 @pytest.fixture
 def test_config() -> Config:
     return Config(
-        baseline_model=BaselineModel.GPT5NANO,
-        lm_model="openai/gpt-5-nano-2025-08-07",
+        baseline_model=BaselineModel.LUNA,
+        spec=MODELS[BaselineModel.LUNA],
         api_key="comp_sk_test_key",
         webhook_secret=TEST_SECRET,
         api_base_url=API_BASE_URL,

@@ -13,9 +13,13 @@ the prompt's calibration — they are logged, not submitted.
 
 Failure policy (per the baseline's design):
   - The LLM answered but the output can't be parsed → neutral 0.5 fallback.
-  - Transient provider errors (timeouts, rate limits, 5xx) → retried; if
-    retries are exhausted the exception propagates and the caller submits
-    nothing for the event.
+  - Transient provider errors (timeouts, rate limits, 5xx) → retried up to
+    the model's ``attempts``; if retries are exhausted the exception
+    propagates and the caller submits nothing for the event.
+
+The per-call timeout and the number of attempts come from the model's
+``ModelSpec`` (see ``config.py``): they are sized so a call plus a retry
+fits inside the competition's 5-minute prediction deadline.
 """
 
 from __future__ import annotations
@@ -23,12 +27,13 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
-from functools import lru_cache
 from typing import Literal
 
 import dspy
 import litellm
 from dspy.utils.exceptions import AdapterParseError
+
+from em_baseline.config import ModelSpec
 
 logger = logging.getLogger(__name__)
 
@@ -44,8 +49,6 @@ TRANSIENT_ERRORS: tuple[type[Exception], ...] = (
     litellm.exceptions.ServiceUnavailableError,
 )
 
-LM_TIMEOUT_SECONDS = 120
-DEFAULT_ATTEMPTS = 2
 DEFAULT_BACKOFF_SECONDS = 3.0
 
 
@@ -122,17 +125,28 @@ def normalize_percentile(val: float) -> float:
     return max(0.0, min(1.0, val))
 
 
-@lru_cache(maxsize=4)
-def _lm(model: str) -> dspy.LM:
-    # cache=False: every production event is unique, and response caching would
-    # only mask real provider behavior in the live tests.
-    return dspy.LM(model, timeout=LM_TIMEOUT_SECONDS, cache=False)
+def _lm(spec: ModelSpec) -> dspy.LM:
+    """Build the LM for one call from the model's spec.
+
+    cache=False: every production event is unique, and response caching would
+    only mask real provider behavior in the live tests. num_retries=0: LiteLLM
+    would otherwise retry transient errors internally with backoff, hiding
+    calls from the visible retry loop below and stretching one attempt far
+    past the spec's timeout.
+    """
+    return dspy.LM(
+        spec.lm_model,
+        timeout=spec.timeout_seconds,
+        cache=False,
+        num_retries=0,
+        **spec.lm_kwargs,
+    )
 
 
-def _run_program(facts_str: str, preview: str, lm_model: str) -> dspy.Prediction:
+def _run_program(facts_str: str, preview: str, spec: ModelSpec) -> dspy.Prediction:
     """One ChainOfThought call. Isolated so tests can stub the LLM boundary."""
     predictor = dspy.ChainOfThought(PredictEarningsReturn)
-    with dspy.context(lm=_lm(lm_model)):
+    with dspy.context(lm=_lm(spec)):
         return predictor(
             pre_earnings_preview_report=preview,
             key_facts_discussed_in_earnings_call=facts_str,
@@ -143,8 +157,8 @@ def predict_from_facts(
     facts_str: str,
     preview: str | None,
     *,
-    lm_model: str,
-    attempts: int = DEFAULT_ATTEMPTS,
+    spec: ModelSpec,
+    attempts: int | None = None,
     backoff_seconds: float | None = None,
 ) -> PredictionOutcome:
     """Predict the return percentile for one event's facts and (optional) preview.
@@ -152,14 +166,17 @@ def predict_from_facts(
     ``preview`` is the earnings preview markdown, or ``None`` when the event
     has none — the prompt then receives ``NO_PREVIEW_NOTE`` in its place.
     Returns a neutral 0.5 outcome when the model's answer is unparseable.
-    Raises (after ``attempts`` tries) on persistent transient provider errors.
+    Raises (after ``attempts`` tries, default ``spec.attempts``) on persistent
+    transient provider errors.
     """
+    if attempts is None:
+        attempts = spec.attempts
     if backoff_seconds is None:
         backoff_seconds = DEFAULT_BACKOFF_SECONDS
     preview_text = preview or NO_PREVIEW_NOTE
     for attempt in range(1, attempts + 1):
         try:
-            result = _run_program(facts_str, preview_text, lm_model)
+            result = _run_program(facts_str, preview_text, spec)
             percentile = normalize_percentile(float(result.predict_percentile))
         except AdapterParseError as exc:
             logger.warning("LLM output unparseable; falling back to neutral: %s", exc)

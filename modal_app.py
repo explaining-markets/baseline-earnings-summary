@@ -5,17 +5,17 @@ shell at deploy time and baked into the image) selects the model and the
 credential pair, and parameterizes every Modal resource name so the
 deployments never collide:
 
-    BASELINE_MODEL=gpt5nano uv run modal deploy modal_app.py
-    BASELINE_MODEL=gemini   uv run modal deploy modal_app.py
+    BASELINE_MODEL=luna   uv run modal deploy modal_app.py
+    BASELINE_MODEL=gemini uv run modal deploy modal_app.py
 
 Each deploy prints a persistent public URL like
-``https://<workspace>--em-baseline-gpt5nano.modal.run`` — that URL is the
+``https://<workspace>--em-baseline-luna.modal.run`` — that URL is the
 webhook URL to paste into the portal for the matching submission, as-is.
 
 Architecture (see README for the why):
 
     web (ASGI)          verify signature → claim Webhook-Id → spawn worker → ACK 200
-    process_event       fetch DisclosureBundle → DSPy prediction → submit
+    process_event       fetch DisclosureBundle (facts + preview) → DSPy prediction → submit
 
 The webhook handler ACKs fast because the competition's delivery POST times
 out after 20 seconds, while a reasoning-model call can take far longer. The
@@ -36,7 +36,15 @@ app = modal.App(APP_NAME)
 
 image = (
     modal.Image.debian_slim(python_version="3.12")
-    .pip_install("fastapi[standard]>=0.110", "httpx>=0.27", "dspy==3.2.1", "pydantic>=2.6")
+    # dspy and litellm are pinned to the versions in uv.lock: the Responses API
+    # path (GPT-6 Luna) is exercised through both, and litellm otherwise floats.
+    .pip_install(
+        "fastapi[standard]>=0.110",
+        "httpx>=0.27",
+        "dspy==3.2.1",
+        "litellm==1.91.0",
+        "pydantic>=2.6",
+    )
     .env({"BASELINE_MODEL": BASELINE_MODEL.value})
     .add_local_python_source("em_baseline")
 )
@@ -88,9 +96,15 @@ def _release(webhook_id: str | None, *, submitted: bool) -> None:
         seen_webhooks.pop(webhook_id, None)
 
 
-@app.function(image=image, secrets=secrets, timeout=280)
+# Sized to the 5-minute prediction deadline: the longest configured model call
+# (240 s) plus the bundle fetch and submission retries. Work past ~300 s could
+# only produce a late-tagged, unscored submission.
+WORKER_TIMEOUT_SECONDS = 290
+
+
+@app.function(image=image, secrets=secrets, timeout=WORKER_TIMEOUT_SECONDS)
 def process_event(event: dict, webhook_id: str | None = None) -> dict:
-    """Worker: fetch facts, run the LLM, submit the prediction.
+    """Worker: fetch facts and preview, run the LLM, submit the prediction.
 
     Spawned by the webhook handler after the ACK; a failure here is visible in
     the Modal dashboard but never blocks or fails the webhook delivery. The

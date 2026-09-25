@@ -12,7 +12,7 @@ import pytest
 import respx
 
 from em_baseline import predictor
-from em_baseline.config import Config
+from em_baseline.config import Config, ModelSpec
 from em_baseline.predictor import NO_PREVIEW_NOTE
 from em_baseline.worker import handle_event
 from tests.conftest import API_BASE_URL, INFORMATION_URL, NVDA_INFORMATION_URL
@@ -31,8 +31,8 @@ def _stub_llm(monkeypatch: pytest.MonkeyPatch, percentile: float = 0.83) -> dict
     """Stub the LLM boundary; returns a dict that records the program's inputs."""
     seen: dict[str, str] = {}
 
-    def fake_program(facts: str, preview: str, model: str) -> dspy.Prediction:
-        seen.update(facts=facts, preview=preview, model=model)
+    def fake_program(facts: str, preview: str, spec: ModelSpec) -> dspy.Prediction:
+        seen.update(facts=facts, preview=preview, model=spec.lm_model)
         return dspy.Prediction(
             predict_class="up",
             predict_percentile=percentile,
@@ -142,7 +142,7 @@ def test_unparseable_llm_output_submits_neutral(
 
     from em_baseline.predictor import PredictEarningsReturn
 
-    def raise_parse_error(facts: str, preview: str, model: str) -> dspy.Prediction:
+    def raise_parse_error(facts: str, preview: str, spec: ModelSpec) -> dspy.Prediction:
         raise AdapterParseError("ChatAdapter", PredictEarningsReturn, "garbage")
 
     monkeypatch.setattr(predictor, "_run_program", raise_parse_error)
@@ -163,7 +163,7 @@ def test_persistent_llm_outage_submits_nothing(
     sample_bundle: dict,
     test_config: Config,
 ) -> None:
-    def always_down(facts: str, preview: str, model: str) -> dspy.Prediction:
+    def always_down(facts: str, preview: str, spec: ModelSpec) -> dspy.Prediction:
         raise litellm.exceptions.InternalServerError("boom", "openai", "gpt-5-nano")
 
     monkeypatch.setattr(predictor, "_run_program", always_down)

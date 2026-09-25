@@ -1,14 +1,14 @@
-"""Config selection: BASELINE_MODEL picks the model string and credential pair."""
+"""Config selection: BASELINE_MODEL picks the model spec and credential pair."""
 
 from __future__ import annotations
 
 import pytest
 
-from em_baseline.config import BaselineModel, Config
+from em_baseline.config import MODELS, BaselineModel, Config
 
 BASE_ENV = {
-    "EM_API_KEY_GPT5NANO": "comp_sk_nano",
-    "EM_WEBHOOK_SECRET_GPT5NANO": "whsec_nano",
+    "EM_API_KEY_LUNA": "comp_sk_luna",
+    "EM_WEBHOOK_SECRET_LUNA": "whsec_luna",
     "EM_API_KEY_GEMINI": "comp_sk_gemini",
     "EM_WEBHOOK_SECRET_GEMINI": "whsec_gemini",
     "OPENAI_API_KEY": "sk-test",
@@ -24,13 +24,14 @@ def full_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
     return monkeypatch
 
 
-def test_gpt5nano_selects_openai_model_and_nano_credentials(full_env: pytest.MonkeyPatch) -> None:
-    full_env.setenv("BASELINE_MODEL", "gpt5nano")
+def test_luna_selects_openai_model_and_luna_credentials(full_env: pytest.MonkeyPatch) -> None:
+    full_env.setenv("BASELINE_MODEL", "luna")
     cfg = Config.from_env()
-    assert cfg.baseline_model is BaselineModel.GPT5NANO
-    assert cfg.lm_model == "openai/gpt-5-nano-2025-08-07"
-    assert cfg.api_key == "comp_sk_nano"
-    assert cfg.webhook_secret == "whsec_nano"
+    assert cfg.baseline_model is BaselineModel.LUNA
+    assert cfg.spec is MODELS[BaselineModel.LUNA]
+    assert cfg.spec.lm_model == "openai/gpt-6-luna"
+    assert cfg.api_key == "comp_sk_luna"
+    assert cfg.webhook_secret == "whsec_luna"
     assert cfg.api_base_url == "https://api.explainingmarkets.ai/v1"
 
 
@@ -38,9 +39,25 @@ def test_gemini_selects_gemini_model_and_gemini_credentials(full_env: pytest.Mon
     full_env.setenv("BASELINE_MODEL", "gemini")
     cfg = Config.from_env()
     assert cfg.baseline_model is BaselineModel.GEMINI
-    assert cfg.lm_model == "gemini/gemini-flash-lite-latest"
+    assert cfg.spec.lm_model == "gemini/gemini-flash-lite-latest"
     assert cfg.api_key == "comp_sk_gemini"
     assert cfg.webhook_secret == "whsec_gemini"
+
+
+def test_registry_pins_the_measured_configurations() -> None:
+    """The specs are what the earnings-preview lift analysis measured."""
+    luna = MODELS[BaselineModel.LUNA]
+    assert luna.lm_kwargs == {"model_type": "responses", "reasoning": {"effort": "max"}}
+    assert (luna.timeout_seconds, luna.attempts) == (240, 1)
+    gemini = MODELS[BaselineModel.GEMINI]
+    assert gemini.lm_kwargs == {}  # provider defaults
+    assert (gemini.timeout_seconds, gemini.attempts) == (120, 2)
+
+
+def test_every_model_fits_the_prediction_deadline() -> None:
+    """One call plus a retry must land inside the 5-minute deadline."""
+    for spec in MODELS.values():
+        assert spec.timeout_seconds * spec.attempts <= 240
 
 
 def test_missing_baseline_model_raises(full_env: pytest.MonkeyPatch) -> None:
@@ -50,7 +67,7 @@ def test_missing_baseline_model_raises(full_env: pytest.MonkeyPatch) -> None:
 
 
 def test_invalid_baseline_model_raises(full_env: pytest.MonkeyPatch) -> None:
-    full_env.setenv("BASELINE_MODEL", "gpt4")
+    full_env.setenv("BASELINE_MODEL", "gpt5nano")
     with pytest.raises(RuntimeError, match="invalid"):
         Config.from_env()
 
@@ -63,7 +80,7 @@ def test_missing_credential_pair_raises(full_env: pytest.MonkeyPatch) -> None:
 
 
 def test_missing_provider_key_raises(full_env: pytest.MonkeyPatch) -> None:
-    full_env.setenv("BASELINE_MODEL", "gpt5nano")
+    full_env.setenv("BASELINE_MODEL", "luna")
     full_env.delenv("OPENAI_API_KEY")
     with pytest.raises(RuntimeError, match="OPENAI_API_KEY"):
         Config.from_env()
