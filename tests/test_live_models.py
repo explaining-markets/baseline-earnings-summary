@@ -51,7 +51,7 @@ def test_predictor_against_real_provider(model: BaselineModel, adea_facts: list[
     """The ported DSPy program produces a valid, calibrated prediction."""
     _require_key(model)
 
-    outcome = predict_from_facts(format_facts(adea_facts), lm_model=LM_MODELS[model])
+    outcome = predict_from_facts(format_facts(adea_facts), None, lm_model=LM_MODELS[model])
 
     assert outcome.fallback_reason is None, f"unexpected fallback: {outcome.fallback_reason}"
     assert 0.0 <= outcome.percentile <= 1.0

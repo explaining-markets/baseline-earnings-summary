@@ -13,8 +13,9 @@ import respx
 
 from em_baseline import predictor
 from em_baseline.config import Config
+from em_baseline.predictor import NO_PREVIEW_NOTE
 from em_baseline.worker import handle_event
-from tests.conftest import API_BASE_URL, INFORMATION_URL
+from tests.conftest import API_BASE_URL, INFORMATION_URL, NVDA_INFORMATION_URL
 
 PREDICTIONS_URL = f"{API_BASE_URL}/predictions"
 
@@ -26,17 +27,21 @@ ACCEPTED = {
 }
 
 
-def _stub_llm(monkeypatch: pytest.MonkeyPatch, percentile: float = 0.83) -> None:
-    monkeypatch.setattr(
-        predictor,
-        "_run_program",
-        lambda facts, model: dspy.Prediction(
+def _stub_llm(monkeypatch: pytest.MonkeyPatch, percentile: float = 0.83) -> dict[str, str]:
+    """Stub the LLM boundary; returns a dict that records the program's inputs."""
+    seen: dict[str, str] = {}
+
+    def fake_program(facts: str, preview: str, model: str) -> dspy.Prediction:
+        seen.update(facts=facts, preview=preview, model=model)
+        return dspy.Prediction(
             predict_class="up",
             predict_percentile=percentile,
             rationale="Revenue grew strongly.",
             reasoning="Growth.",
-        ),
-    )
+        )
+
+    monkeypatch.setattr(predictor, "_run_program", fake_program)
+    return seen
 
 
 @respx.mock
@@ -46,7 +51,7 @@ def test_happy_path_submits_first_focal_asset(
     sample_bundle: dict,
     test_config: Config,
 ) -> None:
-    _stub_llm(monkeypatch)
+    seen = _stub_llm(monkeypatch)
     respx.get(INFORMATION_URL).respond(json=sample_bundle)
     submit_route = respx.post(PREDICTIONS_URL).respond(status_code=201, json=ACCEPTED)
 
@@ -64,6 +69,33 @@ def test_happy_path_submits_first_focal_asset(
     assert summary["fallback_reason"] is None
     assert summary["n_facts"] == 10
     assert summary["submission_status"] == "accepted_first"
+    # ADEA's bundle has no preview: the prompt is told so, and the summary says so.
+    assert seen["preview"] == NO_PREVIEW_NOTE
+    assert summary["has_preview"] is False
+    assert summary["preview_chars"] == 0
+
+
+@respx.mock
+def test_preview_is_passed_through_verbatim(
+    monkeypatch: pytest.MonkeyPatch,
+    nvda_event: dict,
+    nvda_bundle: dict,
+    nvda_preview: str,
+    test_config: Config,
+) -> None:
+    seen = _stub_llm(monkeypatch)
+    respx.get(NVDA_INFORMATION_URL).respond(json=nvda_bundle)
+    submit_route = respx.post(PREDICTIONS_URL).respond(status_code=201, json=ACCEPTED)
+
+    summary = handle_event(nvda_event, config=test_config)
+
+    assert seen["preview"] == nvda_preview
+    assert seen["facts"].startswith("- ")
+    body = json.loads(submit_route.calls.last.request.content)
+    assert body["event_id"] == "ea_NVDA_Q2_2027"
+    assert [p["identifier_value"] for p in body["predictions"]] == ["NVDA"]
+    assert summary["has_preview"] is True
+    assert summary["preview_chars"] == len(nvda_preview)
 
 
 @respx.mock
@@ -110,7 +142,7 @@ def test_unparseable_llm_output_submits_neutral(
 
     from em_baseline.predictor import PredictEarningsReturn
 
-    def raise_parse_error(facts: str, model: str) -> dspy.Prediction:
+    def raise_parse_error(facts: str, preview: str, model: str) -> dspy.Prediction:
         raise AdapterParseError("ChatAdapter", PredictEarningsReturn, "garbage")
 
     monkeypatch.setattr(predictor, "_run_program", raise_parse_error)
@@ -131,7 +163,7 @@ def test_persistent_llm_outage_submits_nothing(
     sample_bundle: dict,
     test_config: Config,
 ) -> None:
-    def always_down(facts: str, model: str) -> dspy.Prediction:
+    def always_down(facts: str, preview: str, model: str) -> dspy.Prediction:
         raise litellm.exceptions.InternalServerError("boom", "openai", "gpt-5-nano")
 
     monkeypatch.setattr(predictor, "_run_program", always_down)

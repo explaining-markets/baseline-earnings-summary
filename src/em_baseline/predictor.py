@@ -2,11 +2,14 @@
 
 This is a direct port of the research pipeline's DSPy program (signature,
 prompt text, and percentile normalization are verbatim): a single
-``dspy.ChainOfThought`` call over the bullet-point fact summary. The
-competition only scores ``predict_percentile``; ``predict_class`` and
-``rationale`` are still requested because the class↔percentile consistency
-constraints are part of the prompt's calibration — they are logged, not
-submitted.
+``dspy.ChainOfThought`` call over two inputs — the earnings preview (an
+agent-written research note assembled from public sources before the
+release) and the bullet-point fact summary of the call. The preview is
+optional: when an event has none, the field carries ``NO_PREVIEW_NOTE`` and
+the prompt tells the model to rely on the facts alone. The competition only
+scores ``predict_percentile``; ``predict_class`` and ``rationale`` are still
+requested because the class↔percentile consistency constraints are part of
+the prompt's calibration — they are logged, not submitted.
 
 Failure policy (per the baseline's design):
   - The LLM answered but the output can't be parsed → neutral 0.5 fallback.
@@ -49,8 +52,14 @@ DEFAULT_BACKOFF_SECONDS = 3.0
 class PredictEarningsReturn(dspy.Signature):
     """Predict the unexpected stock return following an earnings call.
 
-    You are given key facts from a company's earnings call transcript.
-    Predict the stock's unexpected return as a class and percentile.
+    You are given two inputs: a pre-earnings preview report, written shortly
+    before the results were released, covering consensus expectations, the key
+    metrics to watch, scenarios, and positioning; and key facts from the
+    company's earnings call transcript. Use the preview to understand what the
+    market expected going into the release, then judge the call's facts
+    against those expectations. If no preview report is available for an
+    event, rely on the call's facts alone. Predict the stock's unexpected
+    return as a class and percentile.
 
     Base rates — calibrate your predictions to these proportions:
       - ~25% of stocks go UP (price increases 5%+ after the call)
@@ -64,9 +73,14 @@ class PredictEarningsReturn(dspy.Signature):
 
     Your rationale must reference substantive evidence directly
     (e.g., "Revenue grew 18% year-over-year…"). Never reference fact
-    numbers (e.g., never say "fact 3 shows…" or "according to fact 7").
+    numbers (e.g., never say "fact 3 shows…" or "according to fact 7"),
+    and never reference section numbers of the preview report.
     """
 
+    pre_earnings_preview_report: str = dspy.InputField(
+        desc="Pre-earnings preview report written before the earnings release (markdown), "
+        "or a note that none is available"
+    )
     key_facts_discussed_in_earnings_call: str = dspy.InputField(
         desc="Bullet-point summary of key facts from the earnings call"
     )
@@ -80,6 +94,11 @@ class PredictEarningsReturn(dspy.Signature):
     rationale: str = dspy.OutputField(
         desc="2-3 sentence explanation justifying the prediction using substantive evidence"
     )
+
+
+# What the preview field receives when the bundle carries no preview item.
+# The signature's instructions tell the model to fall back to the facts alone.
+NO_PREVIEW_NOTE = "No pre-earnings preview report is available for this event."
 
 
 @dataclass(frozen=True)
@@ -110,30 +129,37 @@ def _lm(model: str) -> dspy.LM:
     return dspy.LM(model, timeout=LM_TIMEOUT_SECONDS, cache=False)
 
 
-def _run_program(facts_str: str, lm_model: str) -> dspy.Prediction:
+def _run_program(facts_str: str, preview: str, lm_model: str) -> dspy.Prediction:
     """One ChainOfThought call. Isolated so tests can stub the LLM boundary."""
     predictor = dspy.ChainOfThought(PredictEarningsReturn)
     with dspy.context(lm=_lm(lm_model)):
-        return predictor(key_facts_discussed_in_earnings_call=facts_str)
+        return predictor(
+            pre_earnings_preview_report=preview,
+            key_facts_discussed_in_earnings_call=facts_str,
+        )
 
 
 def predict_from_facts(
     facts_str: str,
+    preview: str | None,
     *,
     lm_model: str,
     attempts: int = DEFAULT_ATTEMPTS,
     backoff_seconds: float | None = None,
 ) -> PredictionOutcome:
-    """Predict the return percentile for one event's facts.
+    """Predict the return percentile for one event's facts and (optional) preview.
 
+    ``preview`` is the earnings preview markdown, or ``None`` when the event
+    has none — the prompt then receives ``NO_PREVIEW_NOTE`` in its place.
     Returns a neutral 0.5 outcome when the model's answer is unparseable.
     Raises (after ``attempts`` tries) on persistent transient provider errors.
     """
     if backoff_seconds is None:
         backoff_seconds = DEFAULT_BACKOFF_SECONDS
+    preview_text = preview or NO_PREVIEW_NOTE
     for attempt in range(1, attempts + 1):
         try:
-            result = _run_program(facts_str, lm_model)
+            result = _run_program(facts_str, preview_text, lm_model)
             percentile = normalize_percentile(float(result.predict_percentile))
         except AdapterParseError as exc:
             logger.warning("LLM output unparseable; falling back to neutral: %s", exc)

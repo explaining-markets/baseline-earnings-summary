@@ -1,4 +1,4 @@
-"""Process one verified webhook event: fetch facts → predict → submit.
+"""Process one verified webhook event: fetch facts + preview → predict → submit.
 
 This runs in the spawned Modal worker function, *after* the webhook has been
 ACKed (the handler ACKs fast because the competition's delivery POST has a
@@ -10,6 +10,8 @@ Failure policy:
   - TEST event (portal webhook test) → submit a neutral 0.5 prediction, skip
     the bundle fetch and the LLM entirely.
   - No usable facts in the bundle → submit the neutral 0.5 baseline.
+  - No earnings preview in the bundle → predict from the facts alone (the
+    preview is optional; the prompt is told none is available).
   - LLM answered but unparseable → submit the neutral 0.5 baseline.
   - Transient failures (bundle fetch, LLM provider, submission API) are
     retried; if retries are exhausted the exception propagates and nothing is
@@ -25,7 +27,7 @@ from typing import Any, TypeVar
 
 import httpx
 
-from em_baseline.bundle import extract_facts, fetch_bundle, format_facts
+from em_baseline.bundle import extract_facts, extract_preview, fetch_bundle, format_facts
 from em_baseline.client import TransientSubmissionError, submit_predictions
 from em_baseline.config import Config
 from em_baseline.event_utils import first_focal_asset, is_test, log_deadline, neutral_predictions
@@ -71,11 +73,19 @@ def handle_event(event: dict[str, Any], config: Config | None = None) -> dict[st
         what=f"bundle fetch for {event_id}",
     )
     facts = extract_facts(bundle)
+    preview = extract_preview(bundle)  # None is normal: not every event has one
+    logger.info(
+        "[%s] bundle: %d facts, preview=%s (%d chars)",
+        event_id,
+        len(facts) if facts else 0,
+        preview is not None,
+        len(preview or ""),
+    )
     if facts is None:
         logger.warning("[%s] no usable facts in bundle — submitting neutral 0.5", event_id)
         outcome = neutral_outcome("no_facts")
     else:
-        outcome = predict_from_facts(format_facts(facts), lm_model=cfg.lm_model)
+        outcome = predict_from_facts(format_facts(facts), preview, lm_model=cfg.lm_model)
 
     response = _retry_transient(
         lambda: submit_predictions(
@@ -93,6 +103,8 @@ def handle_event(event: dict[str, Any], config: Config | None = None) -> dict[st
         "ticker": ticker,
         "model": cfg.lm_model,
         "n_facts": len(facts) if facts else 0,
+        "has_preview": preview is not None,
+        "preview_chars": len(preview or ""),
         "predicted_percentile": outcome.percentile,
         "predict_class": outcome.predict_class,
         "rationale": outcome.rationale,
