@@ -1,4 +1,4 @@
-"""DisclosureBundle parsing: facts extraction and prompt formatting."""
+"""DisclosureBundle parsing: facts and preview extraction, prompt formatting."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import httpx
 import pytest
 import respx
 
-from em_baseline.bundle import extract_facts, fetch_bundle, format_facts
+from em_baseline.bundle import extract_facts, extract_preview, fetch_bundle, format_facts
 from tests.conftest import INFORMATION_URL
 
 
@@ -40,6 +40,47 @@ def test_extract_facts_by_reference_item_returns_none(sample_bundle: dict) -> No
 
 def test_extract_facts_no_items_key_returns_none() -> None:
     assert extract_facts({"schema_version": "1.0"}) is None
+
+
+def test_extract_preview_returns_markdown_verbatim(nvda_bundle: dict, nvda_preview: str) -> None:
+    preview = extract_preview(nvda_bundle)
+    assert preview == nvda_preview
+    assert preview.startswith("# NVIDIA (NVDA)")
+    assert extract_facts(nvda_bundle) is not None  # both items coexist
+
+
+def test_extract_preview_absent_returns_none(sample_bundle: dict) -> None:
+    assert extract_preview(sample_bundle) is None  # ADEA: facts only
+
+
+def test_extract_preview_blank_content_returns_none(nvda_bundle: dict) -> None:
+    nvda_bundle["items"][1]["content"] = "  \n"
+    assert extract_preview(nvda_bundle) is None
+
+
+def test_extract_preview_by_reference_item_returns_none(nvda_bundle: dict) -> None:
+    item = nvda_bundle["items"][1]
+    item["content"] = None
+    item["url"] = "https://disclosures.test/big-preview.md"
+    assert extract_preview(nvda_bundle) is None
+
+
+def test_extract_preview_requires_matching_id_and_kind(nvda_bundle: dict) -> None:
+    nvda_bundle["items"][1]["kind"] = "facts"  # right id, wrong kind
+    assert extract_preview(nvda_bundle) is None
+    nvda_bundle["items"][1]["kind"] = "text"
+    nvda_bundle["items"][1]["id"] = "analyst-note"  # right kind, wrong id
+    assert extract_preview(nvda_bundle) is None
+
+
+def test_items_are_selected_by_id_not_position(nvda_bundle: dict, nvda_preview: str) -> None:
+    nvda_bundle["items"].reverse()
+    assert extract_preview(nvda_bundle) == nvda_preview
+    assert len(extract_facts(nvda_bundle) or []) == 10
+
+
+def test_extract_preview_no_items_key_returns_none() -> None:
+    assert extract_preview({"schema_version": "1.0"}) is None
 
 
 def test_format_facts_renders_bullet_lines() -> None:
