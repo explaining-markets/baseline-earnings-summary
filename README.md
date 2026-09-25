@@ -6,14 +6,16 @@
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-Two vanilla baseline participants for the [Explaining Markets](https://explainingmarkets.ai) competition. Each receives the disseminated earnings-call fact summary — and, when the event carries one, the **earnings preview** — via webhook, and predicts the stock's post-call return percentile with a single LLM call: a direct port of the research pipeline's DSPy program.
+![Lift from adding an earnings preview](docs/figures/lift_vs_cost.svg)
+
+Two baseline submissions for the [Explaining Markets](https://explainingmarkets.ai) competition. Each receives the disseminated earnings-call fact summary and--when the event carries one--the **earnings preview** and predicts the stock's post-call return percentile with a single LLM call.
 
 | Deployment | Model | Credentials |
 |---|---|---|
-| `em-baseline-luna` | `openai/gpt-6-luna` (Responses API, reasoning effort `max`) | `EM_*_LUNA` |
+| `em-baseline-luna` | `openai/gpt-6-luna` | `EM_*_LUNA` |
 | `em-baseline-gemini` | `gemini/gemini-flash-lite-latest` | `EM_*_GEMINI` |
 
-One codebase, two [Modal](https://modal.com) deployments: the `BASELINE_MODEL` environment variable — read from your shell at deploy time and baked into the image — selects the model, the credential pair, and every Modal resource name.
+Each model gets its own [Modal](https://modal.com) deployment controlled by the `BASELINE_MODEL` environment variable. This is read from your shell at deploy time and baked into the image to select the model, credential pair, and every Modal resource name.
 
 ## What the baselines read
 
@@ -49,9 +51,7 @@ Prediction behavior (`src/em_baseline/`):
 
 ## Why the preview
 
-![Lift from adding an earnings preview](docs/figures/lift_vs_cost.svg)
-
-The figure comes from the competition's pre-report lift experiment: the program in this repo was run over the 546 earnings events of the 2026Q3 contest window, once with the facts alone (hollow markers) and once with the earnings preview added as the first input (filled markers), for three GPT-6 models at several reasoning efforts. The y-axis is the R² of the leaderboard regression (the post-call abnormal return on the prediction plus the earnings surprise), so the dashed line at 0.10 is what the earnings surprise explains on its own; the x-axis is the model's API cost per 1,000 events.
+The figure above comes from the competition's pre-report lift experiment: the program in this repo was run over the 546 earnings events of the 2026Q3 contest window, once with the facts alone (hollow markers) and once with the earnings preview added as the first input (filled markers), for three GPT-6 models at several reasoning efforts. The y-axis is the R² of the leaderboard regression (the post-call abnormal return on the prediction plus the earnings surprise), so the dashed line at 0.10 is what the earnings surprise explains on its own; the x-axis is the model's API cost per 1,000 events.
 
 Two things stand out. Reasoning effort barely moves the summary-only program: every hollow series is flat between R² 0.21 and 0.23 from `medium` to `max`. Adding the preview lifts every model, and the lift grows with effort — GPT-6 Luna goes from 0.22 to 0.29 at `max` for under $3 per 1,000 events, GPT-6 Sol from 0.21 to 0.31, GPT-6 Astra from 0.23 to 0.31. Gemini Flash-Lite, not in the figure, goes from 0.224 to 0.263 on the same events, and over all 1,430 events from August through September 2026 its lift is +0.037 R² (p = 0.007). That is why the Luna deployment runs at `max` effort and why both baselines read the preview.
 
