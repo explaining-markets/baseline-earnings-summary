@@ -23,6 +23,9 @@ The document behind an event's `information_url` is a `DisclosureBundle`: a list
 
 - **`earnings-call-facts`** (`kind: facts`) — the facts extracted from the earnings call, as an array of strings. Always present.
 - **`earnings-preview`** (`kind: text`, `media_type: text/markdown`) — an agent-written pre-release research note compiled from public sources *before* the release: consensus expectations, the key metrics to watch, scenarios, and positioning. It is optional: the item is simply absent for events where no preview was produced, and for the portal's `TEST` events.
+- **`option-implied-stats`** (`kind: stats`, `media_type: application/json`) — three statistics derived from the listed options market before the close that opens the event's return window: the implied earnings volatility, the implied absolute move, and the 25-delta skew. Its content is an object, not text. It is optional and is absent when a stock has no listed options or they trade too thinly to measure, which is most smaller companies. Present from 2026Q3 onward.
+
+**The baselines do not read the option statistics.** Their prompt is built from the facts and the preview, so the item's arrival changes nothing about what a baseline predicts. `em_baseline.bundle.extract_option_stats` is there for anyone building on this code.
 
 The preview is what lets the model judge the call *against expectations* rather than in isolation; see [Why the preview](#why-the-preview) below.
 

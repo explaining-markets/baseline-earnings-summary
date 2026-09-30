@@ -21,6 +21,19 @@ versioned envelope::
           "source": "claude_code_web_research",
           "media_type": "text/markdown",
           "content": "# NVIDIA (NVDA) — Q2 FY2027 Earnings Preview\\n..."
+        },
+        {
+          "id": "option-implied-stats", # optional — 2026Q3 onward;
+          "kind": "stats",              # content is an OBJECT
+          "source": "option_market",
+          "media_type": "application/json",
+          "content": {
+            "as_of": "2026-10-05T19:36:12Z",
+            "methodology": "v1",
+            "implied_earnings_volatility":    {"value": 0.0847, "status": "ok"},
+            "implied_absolute_earnings_move": {"value": 0.0676, "status": "ok"},
+            "skew_25_delta":                  {"value": null, "status": "illiquid_wings"}
+          }
         }
       ]
     }
@@ -31,6 +44,14 @@ research note assembled from public sources *before* the release — is
 optional, and a bundle without it is normal (TEST events never carry one).
 Both are inline today, but items of unknown ``kind`` — or a future by-ref
 item — are tolerated and skipped rather than treated as errors.
+
+The option-implied statistics are three numbers derived from the listed options
+market before the close that opens the event's return window. They are
+absent when a stock has no listed options or they trade too thinly to measure.
+:func:`extract_option_stats` reads them, but THE BASELINES DO NOT USE THEM: the
+prompt is built from the facts and the preview only, so the item's arrival
+changes nothing about what a baseline predicts. Feeding them to the model would
+be a change to the baselines themselves, to be made deliberately and measured.
 """
 
 from __future__ import annotations
@@ -46,6 +67,13 @@ FETCH_TIMEOUT_SECONDS = 15.0
 FACTS_KIND = "facts"
 PREVIEW_ID = "earnings-preview"
 PREVIEW_KIND = "text"
+OPTION_STATS_ID = "option-implied-stats"
+OPTION_STATS_KIND = "stats"
+OPTION_STATS_FIELDS = (
+    "implied_earnings_volatility",
+    "implied_absolute_earnings_move",
+    "skew_25_delta",
+)
 
 
 def fetch_bundle(information_url: str, *, timeout: float = FETCH_TIMEOUT_SECONDS) -> dict:
@@ -112,6 +140,42 @@ def extract_preview(bundle: dict) -> str | None:
             item.get("url"),
         )
         return None
+    return None
+
+
+def extract_option_stats(bundle: dict) -> dict[str, float | None] | None:
+    """Pull the option-implied statistics out of a bundle as plain numbers.
+
+    Returns ``{statistic: value}`` for the three statistics, where a statistic
+    whose ``status`` is anything but ``"ok"`` is ``None``. Returns ``None`` when
+    the bundle carries no usable item: no ``id="option-implied-stats"`` /
+    ``kind="stats"`` item, or content that is not an object. That is the normal
+    case for a stock without liquid listed options.
+
+    Provided for anyone building on these baselines. The baselines themselves
+    never call it (see the module docstring).
+    """
+    items = bundle.get("items")
+    if not isinstance(items, list):
+        return None
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if item.get("id") != OPTION_STATS_ID or item.get("kind") != OPTION_STATS_KIND:
+            continue
+        content = item.get("content")
+        if not isinstance(content, dict) or not content:
+            return None
+        values: dict[str, float | None] = {}
+        for name in OPTION_STATS_FIELDS:
+            block = content.get(name)
+            value = block.get("value") if isinstance(block, dict) else None
+            is_ok = isinstance(block, dict) and block.get("status") == "ok"
+            if is_ok and isinstance(value, int | float) and not isinstance(value, bool):
+                values[name] = float(value)
+            else:
+                values[name] = None
+        return values
     return None
 
 
