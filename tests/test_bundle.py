@@ -6,7 +6,13 @@ import httpx
 import pytest
 import respx
 
-from em_baseline.bundle import extract_facts, extract_preview, fetch_bundle, format_facts
+from em_baseline.bundle import (
+    extract_facts,
+    extract_option_stats,
+    extract_preview,
+    fetch_bundle,
+    format_facts,
+)
 from tests.conftest import INFORMATION_URL
 
 
@@ -98,3 +104,63 @@ def test_fetch_bundle_raises_on_http_error() -> None:
     respx.get(INFORMATION_URL).respond(status_code=403)
     with pytest.raises(httpx.HTTPStatusError):
         fetch_bundle(INFORMATION_URL)
+
+
+OPTION_STATS_ITEM = {
+    "id": "option-implied-stats",
+    "kind": "stats",
+    "source": "option_market",
+    "media_type": "application/json",
+    "content": {
+        "as_of": "2026-10-05T19:36:12Z",
+        "methodology": "v1",
+        "implied_earnings_volatility": {"value": 0.0847, "status": "ok"},
+        "implied_absolute_earnings_move": {"value": 0.0676, "status": "ok"},
+        "skew_25_delta": {"value": None, "status": "illiquid_wings"},
+    },
+}
+
+
+def test_extract_option_stats_returns_values_and_none_for_unavailable(nvda_bundle: dict) -> None:
+    bundle = {**nvda_bundle, "items": [*nvda_bundle["items"], OPTION_STATS_ITEM]}
+    assert extract_option_stats(bundle) == {
+        "implied_earnings_volatility": 0.0847,
+        "implied_absolute_earnings_move": 0.0676,
+        "skew_25_delta": None,
+    }
+
+
+def test_extract_option_stats_absent_or_unusable_returns_none(nvda_bundle: dict) -> None:
+    assert extract_option_stats(nvda_bundle) is None
+    assert extract_option_stats({}) is None
+    for content in ({}, "8.5%", ["a"], None):
+        item = {**OPTION_STATS_ITEM, "content": content}
+        assert extract_option_stats({"items": [item]}) is None
+    assert extract_option_stats({"items": [{**OPTION_STATS_ITEM, "kind": "text"}]}) is None
+
+
+def test_extract_option_stats_never_trusts_a_value_without_an_ok_status() -> None:
+    content = {
+        "implied_earnings_volatility": {"value": 0.3, "status": "provisional"},
+        "implied_absolute_earnings_move": {"value": "0.06", "status": "ok"},
+        "skew_25_delta": {"value": True, "status": "ok"},
+    }
+    stats = extract_option_stats({"items": [{**OPTION_STATS_ITEM, "content": content}]})
+    assert stats == dict.fromkeys(
+        ("implied_earnings_volatility", "implied_absolute_earnings_move", "skew_25_delta")
+    )
+
+
+def test_the_option_stats_item_changes_nothing_the_baselines_read(
+    nvda_bundle: dict, nvda_preview: str
+) -> None:
+    """The baselines build their prompt from the facts and the preview. A
+    bundle that also carries the statistics must yield exactly the same two,
+    wherever the new item sits."""
+    facts = extract_facts(nvda_bundle)
+    for position in range(len(nvda_bundle["items"]) + 1):
+        items = list(nvda_bundle["items"])
+        items.insert(position, OPTION_STATS_ITEM)
+        with_stats = {**nvda_bundle, "items": items}
+        assert extract_facts(with_stats) == facts
+        assert extract_preview(with_stats) == nvda_preview
